@@ -14,16 +14,21 @@ class Tripletnet(nn.Module):
 		    weight = torch.zeros(1,dim_embed)/float(dim_embed)
             self.metric_branch.weight = nn.Parameter(weight)
 		"""
-    def forward(self, x, y, z):
+    def forward(self, x, y, z=None):
         #embedded_x = self.embeddingnet(x)
         #embedded_y = self.embeddingnet(y)
         #embedded_z = self.embeddingnet(z)
+        if(z==None):
+            dist_a = self.net(torch.cat((embedded_x, embedded_y), dim=1))
+            return dist_a
         embedded_x = x
         embedded_y = y
         embedded_z = z
         #dist_a = F.pairwise_distance(embedded_x, embedded_y, 2)
         #dist_b = F.pairwise_distance(embedded_x, embedded_z, 2)
-		dist_a = self.net(embedded_x*embedded_y)
-        dist_b = self.net(embedded_x*embedded_z)
+        #print(torch.cat((embedded_x,embedded_y), dim=1).size())
+        #print(torch.cat((embedded_x,embedded_z)).size())
+        dist_a = self.net(torch.cat((embedded_x, embedded_y), dim=1))
+        dist_b = self.net(torch.cat((embedded_x, embedded_z), dim=1))
         
         return dist_a, dist_b, embedded_x, embedded_y, embedded_z

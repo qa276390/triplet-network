@@ -143,6 +143,8 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         return self.emb_tensor[(self.indexlist[self.indexlist.image==imageid].index.values[0])][-1], self.indexlist[self.indexlist.image==imageid].type.values[0]
 
 
+
+########################################## below are unuse ###############################################
 class TripletImageLoader(torch.utils.data.Dataset):
     def __init__(self, base_path, filenames_filename, triplets_file_name, transform=None,
                  loader=default_image_loader):
