@@ -11,6 +11,7 @@ from torch.autograd import Variable
 import torch.backends.cudnn as cudnn
 from triplet_mnist_loader import MNIST_t
 from triplet_image_loader import TripletImageLoader
+from triplet_image_loader import TripletEmbedLoader
 from tripletnet import Tripletnet
 from visdom import Visdom
 import numpy as np
@@ -39,7 +40,10 @@ parser.add_argument('--resume', default='', type=str,
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--name', default='TripletNet', type=str,
                     help='name of experiment')
-
+parser.add_argument('--base-path', default='./data/polyvore_outfits/nondisjoint/', type=str,
+                    help='base path for the data')
+parser.add_argument('--emb-size', type=int, default=64, metavar='M',
+                    help='embedding size')
 best_acc = 0
 
 
@@ -53,39 +57,37 @@ def main():
     global plotter 
     plotter = VisdomLinePlotter(env_name=args.name)
 
+    ######################
+    base_path = args.base_path
+    embed_size = args.embed_size
+    ######################
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     train_loader = torch.utils.data.DataLoader(
-        MNIST_t('../data', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+        TripletEmbedLoader(base_path, 'embed_index.csv', 'train.json', 
+                            'train', 'embedding.pt'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(
-        MNIST_t('../data', train=False, transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+        TripletEmbedLoader(base_path, 'embed_index.csv', 
+        'test.json', 'train', 'embedding.pt')
+        ,
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     class Net(nn.Module):
-        def __init__(self):
+        def __init__(self, embed_size):
             super(Net, self).__init__()
-            self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
-            self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-            self.conv2_drop = nn.Dropout2d()
+            self.nfc1 = nn.Linear(embed_size, 480)
+            self.nfc2 = nn.Linear(480, 320)
             self.fc1 = nn.Linear(320, 50)
-            self.fc2 = nn.Linear(50, 10)
+            self.fc2 = nn.Linear(50, 1)
 
         def forward(self, x):
-            x = F.relu(F.max_pool2d(self.conv1(x), 2))
-            x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
-            x = x.view(-1, 320)
+            x = F.relu(self.nfc1(x))
+            x = F.relu(self.nfc2(x))
             x = F.relu(self.fc1(x))
             x = F.dropout(x, training=self.training)
             return self.fc2(x)
 
-    model = Net()
+    model = Net(embed_size)
     tnet = Tripletnet(model)
     if args.cuda:
         tnet.cuda()
