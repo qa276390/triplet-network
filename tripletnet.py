@@ -18,12 +18,13 @@ class Tripletnet(nn.Module):
         #embedded_x = self.embeddingnet(x)
         #embedded_y = self.embeddingnet(y)
         #embedded_z = self.embeddingnet(z)
-        if(z==None):
-            dist_a = self.net(torch.cat((embedded_x, embedded_y), dim=1))
-            return dist_a
+        
         embedded_x = x
         embedded_y = y
         embedded_z = z
+        if(z==None):
+            dist_a = self.net(torch.cat((embedded_x, embedded_y), dim=1))
+            return dist_a
         #dist_a = F.pairwise_distance(embedded_x, embedded_y, 2)
         #dist_b = F.pairwise_distance(embedded_x, embedded_z, 2)
         #print(torch.cat((embedded_x,embedded_y), dim=1).size())
