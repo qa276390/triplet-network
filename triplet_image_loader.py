@@ -6,6 +6,7 @@ import json
 
 import torch.utils.data
 import torchvision.transforms as transforms
+import numpy as np
 
 def default_image_loader(path):
     return Image.open(path).convert('RGB')
@@ -21,8 +22,7 @@ triplets_file_name: train.json (set)
 """
 
 class TripletEmbedLoader(torch.utils.data.Dataset):
-    def __init__(self, base_path, filenames_filename, triplets_file_name, mode, emb_path, transform=None,
-                 loader=emb_loader):
+    def __init__(self, base_path, filenames_filename, triplets_file_name, mode, emb_file, transform=None):
         """ filenames_filename: A text file with each line containing the path to an image e.g.,
                 images/class1/sample.jpg
             triplets_file_name: A text file with each line containing three integers, 
@@ -33,18 +33,20 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         self.is_train = mode == 'train' 
         self.base_path = base_path  
         ######################################
-        self.emb_tensor = torch.load(emb_path)
+        self.emb_path = os.path.join(self.base_path, emb_file)
+        self.emb_tensor = torch.load(self.emb_path)
+        print(type(self.emb_tensor[0][-1]))
         data_json = os.path.join(base_path, triplets_file_name) 
         outfit_data = json.load(open(data_json, 'r'))
         ######################################
         
-        #self.filenamelist = []
-        self.indexlist = pd.read_csv(filenames_filename)
+        self.index_path = os.path.join(self.base_path, filenames_filename)
+        self.indexlist = pd.read_csv(self.index_path)
         #for line in open(filenames_filename):
         #    self.filenamelist.append(line.rstrip('\n'))
         
         self.transform = transform
-        self.loader = loader
+        #self.loader = loader
         ###################################### ######################################
         im2type = {}
         category2ims = {}
@@ -54,7 +56,9 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             outfit_id = outfit['set_id']
             for item in outfit['items']:
                 im = item['item_id']
-                category = meta_data[im]['semantic_category']
+                #print(im)
+                #print(self.indexlist.image==im)
+                category = self.indexlist[self.indexlist.image==int(im)].type.values[0]
                 im2type[im] = category
 
                 if category not in category2ims:
@@ -66,7 +70,7 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                 category2ims[category][outfit_id].append(im)
                 id2im['%s_%i' % (outfit_id, int(item['index']))] = im
                 imnames.add(im)
-
+        self.category2ims = category2ims
         pos_pairs = []
         max_items = 0
         for outfit in outfit_data:
@@ -116,9 +120,9 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             img1, anchor_type = self.femb_loader(anchor_im)
             img2, item_type = self.femb_loader(pos_im)
             
-            neg_im_idx = self.sample_negative(outfit_id, pos_im, item_type)
-            img3 = self.emb_loader(neg_im_idx)
-            
+            neg_im_id = self.sample_negative(outfit_id, pos_im, item_type)
+            img3, ntype = self.femb_loader(neg_im_id)
+        
             return img1, img2, img3
 
         anchor = self.imnames[index]
@@ -127,14 +131,16 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         return img1
 
     def __len__(self):
-        return len(self.triplets)
+        if self.is_train:
+            return len(self.pos_pairs)
+        return len(self.imnames)
 
     def emb_loader(self, index):
         return self.emb_tensor[index][-1]
 
-    def femb_loader(self, filename):
-
-        return self.emb_tensor[(self.indexlist[indexlist.image==filename].index.values[0])][-1], self.indexlist[indexlist.image==filename].type.values[0]
+    def femb_loader(self, imageid):
+        imageid = int(imageid)
+        return self.emb_tensor[(self.indexlist[self.indexlist.image==imageid].index.values[0])][-1], self.indexlist[self.indexlist.image==imageid].type.values[0]
 
 
 class TripletImageLoader(torch.utils.data.Dataset):

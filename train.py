@@ -59,23 +59,23 @@ def main():
 
     ######################
     base_path = args.base_path
-    embed_size = args.embed_size
+    embed_size = args.emb_size
     ######################
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     train_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(base_path, 'embed_index.csv', 'train.json', 
-                            'train', 'embedding.pt'),
+        TripletEmbedLoader(base_path, 'embed_index.csv', 'test.json', 
+                            'train', 'test_embeddings.pt'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(
         TripletEmbedLoader(base_path, 'embed_index.csv', 
-        'test.json', 'train', 'embedding.pt')
+        'test.json', 'train', 'test_embeddings.pt')
         ,
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     class Net(nn.Module):
         def __init__(self, embed_size):
             super(Net, self).__init__()
-            self.nfc1 = nn.Linear(embed_size, 480)
+            self.nfc1 = nn.Linear(embed_size * 2, 480)
             self.nfc2 = nn.Linear(480, 320)
             self.fc1 = nn.Linear(320, 50)
             self.fc2 = nn.Linear(50, 1)
@@ -108,7 +108,8 @@ def main():
     cudnn.benchmark = True
 
     criterion = torch.nn.MarginRankingLoss(margin = args.margin)
-    optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
+    #optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
+    optimizer = optim.Adam(tnet.parameters(), lr=args.lr)
 
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
@@ -231,7 +232,7 @@ class VisdomLinePlotter(object):
                 ylabel=var_name
             ))
         else:
-            self.viz.updateTrace(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name)
+            self.viz.line(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name, update='append')
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
