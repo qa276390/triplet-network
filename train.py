@@ -69,6 +69,8 @@ def main():
     global args, best_acc
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
+    if(not args.cuda):
+        print('no cuda!')
     torch.manual_seed(args.seed)
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
@@ -80,10 +82,12 @@ def main():
     embed_size = args.emb_size
     ######################
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    print('loading training data...')
     train_loader = torch.utils.data.DataLoader(
         TripletEmbedLoader(base_path, 'train_embed_index.csv', 'train.json', 
                             'train', 'train_embeddings.pt'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
+    print('loading testing data...')
     test_loader = torch.utils.data.DataLoader(
         TripletEmbedLoader(base_path, 'test_embed_index.csv', 
         'test.json', 'train', 'test_embeddings.pt')
@@ -132,6 +136,7 @@ def main():
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
+    
     for epoch in range(1, args.epochs + 1):
         # train for one epoch
         train(train_loader, tnet, criterion, optimizer, epoch)
