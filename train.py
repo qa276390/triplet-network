@@ -44,8 +44,26 @@ parser.add_argument('--base-path', default='./data/polyvore_outfits/nondisjoint/
                     help='base path for the data')
 parser.add_argument('--emb-size', type=int, default=64, metavar='M',
                     help='embedding size')
+parser.add_argument('--rand-cat', action='store_true', default=False,
+                    help='randomly in concat order')
 best_acc = 0
 
+class CNNNet(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv1d(1, 10, kernel_size=3)
+        self.conv2 = nn.Conv1d(10, 20, kernel_size=3)
+        self.conv1_drop = nn.Dropout()
+        self.fc1 = nn.Linear(320, 50)
+        self.fc2 = nn.Linear(50, 1)
+
+    def forward(self, x):
+        x = F.relu(F.max_pool1d(self.conv1(x), 2))
+        x = F.relu(F.max_pool1d(self.conv2_drop(self.conv2(x)), 2))
+        x = x.view(-1, 320)
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        return self.fc2(x)
 
 def main():
     global args, best_acc
@@ -63,11 +81,11 @@ def main():
     ######################
     kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     train_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(base_path, 'embed_index.csv', 'test.json', 
-                            'train', 'test_embeddings.pt'),
+        TripletEmbedLoader(base_path, 'train_embed_index.csv', 'train.json', 
+                            'train', 'train_embeddings.pt'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(base_path, 'embed_index.csv', 
+        TripletEmbedLoader(base_path, 'test_embed_index.csv', 
         'test.json', 'train', 'test_embeddings.pt')
         ,
         batch_size=args.batch_size, shuffle=True, **kwargs)
@@ -88,7 +106,7 @@ def main():
             return self.fc2(x)
 
     model = Net(embed_size)
-    tnet = Tripletnet(model)
+    tnet = Tripletnet(model, args)
     if args.cuda:
         tnet.cuda()
 
