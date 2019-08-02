@@ -3,6 +3,7 @@ import os
 import os.path
 import pandas as pd
 import json
+import time
 
 import torch.utils.data
 import torchvision.transforms as transforms
@@ -22,7 +23,7 @@ triplets_file_name: train.json (set)
 """
 
 class TripletEmbedLoader(torch.utils.data.Dataset):
-    def __init__(self, base_path, filenames_filename, triplets_file_name, mode, emb_file, transform=None):
+    def __init__(self, args, base_path, filenames_filename, triplets_file_name, mode, emb_file, transform=None):
         """ filenames_filename: A text file with each line containing the path to an image e.g.,
                 images/class1/sample.jpg
             triplets_file_name: A text file with each line containing three integers, 
@@ -31,7 +32,8 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                 similar to image c than it is to image b, e.g., 
                 0 2017 42 """
         self.is_train = mode == 'train' 
-        self.base_path = base_path  
+        self.base_path = base_path 
+        self.args = args
         ######################################
         self.emb_path = os.path.join(self.base_path, emb_file)
         self.emb_tensor = torch.load(self.emb_path)
@@ -51,26 +53,30 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         im2type = {}
         category2ims = {}
         imnames = set()
-        id2im = {}
+        gid2idx = {}
+        #id2im = {}
         for outfit in outfit_data:
             outfit_id = outfit['set_id']
             for item in outfit['items']:
                 im = item['item_id']
                 #print(im)
                 #print(self.indexlist.image==im)
+                embidx =  self.indexlist[self.indexlist.image==int(im)].index.values[0]
                 category = self.indexlist[self.indexlist.image==int(im)].type.values[0]
-                im2type[im] = category
-
+                im2type[embidx] = category
+                gid2idx[int(im)] = embidx
                 if category not in category2ims:
                     category2ims[category] = {}
 
                 if outfit_id not in category2ims[category]:
                     category2ims[category][outfit_id] = []
 
-                category2ims[category][outfit_id].append(im)
-                id2im['%s_%i' % (outfit_id, int(item['index']))] = im
-                imnames.add(im)
+                category2ims[category][outfit_id].append(embidx)
+                #id2im['%s_%i' % (outfit_id, int(item['index']))] = im
+                imnames.add(embidx)
         self.category2ims = category2ims
+        self.gid2idx = gid2idx
+        self.im2type = im2type
         pos_pairs = []
         max_items = 0
         for outfit in outfit_data:
@@ -80,7 +86,9 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             outfit_id = outfit['set_id']
             for j in range(cnt-1):
                 for k in range(j+1, cnt):
-                    pos_pairs.append([outfit_id, items[j]['item_id'], items[k]['item_id']])
+                    anc = int(items[j]['item_id'])
+                    pos = int(items[k]['item_id'])
+                    pos_pairs.append([outfit_id, gid2idx[anc], gid2idx[pos]])
 
         self.pos_pairs = pos_pairs
         ###################################### ######################################
@@ -95,6 +103,7 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             item_type: the coarse type of the item that the item
                        that was paired with the anchor
         """
+        start_time = time.time()
         item_out = item_id
         candidate_sets = self.category2ims[item_type].keys()
         attempts = 0
@@ -105,6 +114,7 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             item_out = items[item_index]
             attempts += 1
                 
+        print("--- negsample: %s seconds ---" % (time.time()-start_time))
         return item_out
     
 
@@ -116,17 +126,18 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         #    img3 = self.transform(img3)
 
         if self.is_train:
+            start_time = time.time()
             outfit_id, anchor_im, pos_im = self.pos_pairs[index]
-            img1, anchor_type = self.femb_loader(anchor_im)
-            img2, item_type = self.femb_loader(pos_im)
+            img1= self.emb_loader(anchor_im)
+            img2, item_type = self.emb_loader(pos_im, True)
             
             neg_im_id = self.sample_negative(outfit_id, pos_im, item_type)
-            img3, ntype = self.femb_loader(neg_im_id)
-        
+            img3= self.emb_loader(neg_im_id)
+            print("----- getitem: %s seconds ---" % (time.time()-start_time))
             return img1, img2, img3
 
         anchor = self.imnames[index]
-        img1, anchor_type = self.femb_loader(anchor)
+        img1, anchor_type = self.emb_loader(anchor)
             
         return img1
 
@@ -135,13 +146,25 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             return len(self.pos_pairs)
         return len(self.imnames)
 
-    def emb_loader(self, index):
-        return self.emb_tensor[index][-1]
+    def emb_loader(self, index, iftype=False):
+        if(self.args.cnn):
+            if(iftype):
+                cat = self.im2type[index]
+                return self.emb_tensor[index][-1].unsqueeze(0), cat
+            return self.emb_tensor[index][-1].unsqueeze(0)
 
+        else:
+            if(iftype):
+                cat = self.im2type[index]
+                return self.emb_tensor[index][-1], cat
+            return self.emb_tensor[index][-1]
+    """
     def femb_loader(self, imageid):
+        cat = self.im2type[imageid]
         imageid = int(imageid)
-        return self.emb_tensor[(self.indexlist[self.indexlist.image==imageid].index.values[0])][-1], self.indexlist[self.indexlist.image==imageid].type.values[0]
-
+        idx = self.gid2idx[imageid]
+        return self.emb_tensor[idx][-1], cat
+    """
 
 
 ########################################## below are unuse ###############################################

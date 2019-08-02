@@ -15,13 +15,14 @@ from triplet_image_loader import TripletEmbedLoader
 from tripletnet import Tripletnet
 from visdom import Visdom
 import numpy as np
+import time
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                    help='input batch size for testing (default: 1000)')
+parser.add_argument('--test-batch-size', type=int, default=100, metavar='N',
+                    help='input batch size for testing (default: 100)')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
@@ -46,31 +47,44 @@ parser.add_argument('--emb-size', type=int, default=64, metavar='M',
                     help='embedding size')
 parser.add_argument('--rand-cat', action='store_true', default=False,
                     help='randomly in concat order')
+parser.add_argument('--cnn', action='store_true', default=False,
+                    help='using cnn model')
 best_acc = 0
 
 class CNNNet(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv1d(1, 10, kernel_size=3)
-        self.conv2 = nn.Conv1d(10, 20, kernel_size=3)
+        super(CNNNet, self).__init__()
+        self.conv1 = nn.Conv1d(1, 64, kernel_size=64)
+        self.conv2 = nn.Conv1d(64, 72, kernel_size=2)
+        self.conv3 = nn.Conv1d(72, 72, kernel_size=2)
+        self.conv4 = nn.Conv1d(72, 80, kernel_size=2)
         self.conv1_drop = nn.Dropout()
-        self.fc1 = nn.Linear(320, 50)
-        self.fc2 = nn.Linear(50, 1)
+        self.fc1 = nn.Linear(320, 120)
+        self.fc2 = nn.Linear(120, 50)
+        self.fc3 = nn.Linear(50, 1)
 
     def forward(self, x):
-        x = F.relu(F.max_pool1d(self.conv1(x), 2))
-        x = F.relu(F.max_pool1d(self.conv2_drop(self.conv2(x)), 2))
+        x = F.relu(self.conv1(x))
+        #x = F.relu(F.max_pool1d(self.conv2(x), 3))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        #x = F.relu(F.max_pool1d(self.conv1_drop(self.conv4(x)), 3))
+        x = F.relu(self.conv1_drop(self.conv4(x)))
         x = x.view(-1, 320)
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
-        return self.fc2(x)
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
 
 def main():
+    print('pid:', os.getpid())
     global args, best_acc
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     if(not args.cuda):
         print('no cuda!')
+    else:
+        print('we\'ve got cuda!')
     torch.manual_seed(args.seed)
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
@@ -81,19 +95,20 @@ def main():
     base_path = args.base_path
     embed_size = args.emb_size
     ######################
-    kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    kwargs = {'num_workers': 16, 'pin_memory': True} if args.cuda else {}
     print('loading training data...')
+    #m = 'train'
+    m = 'test'
     train_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(base_path, 'train_embed_index.csv', 'train.json', 
-                            'train', 'train_embeddings.pt'),
+        TripletEmbedLoader(args,base_path, m+'_embed_index.csv', m+'.json', 
+                            'train', m+'_embeddings.pt'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
     print('loading testing data...')
     test_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(base_path, 'test_embed_index.csv', 
+        TripletEmbedLoader(args, base_path, 'test_embed_index.csv', 
         'test.json', 'train', 'test_embeddings.pt')
         ,
         batch_size=args.batch_size, shuffle=True, **kwargs)
-
     class Net(nn.Module):
         def __init__(self, embed_size):
             super(Net, self).__init__()
@@ -105,15 +120,23 @@ def main():
         def forward(self, x):
             x = F.relu(self.nfc1(x))
             x = F.relu(self.nfc2(x))
+            x = F.dropout(x, training=self.training)
             x = F.relu(self.fc1(x))
             x = F.dropout(x, training=self.training)
             return self.fc2(x)
 
-    model = Net(embed_size)
+    if(args.cnn):
+        model = CNNNet()
+    else:
+        model = Net(embed_size)
+    #model = CNNNet()
+    if(args.cuda):
+        model.cuda()
     tnet = Tripletnet(model, args)
+    print('net built.')
     if args.cuda:
         tnet.cuda()
-
+    print('tnet.cuda()')
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -136,10 +159,12 @@ def main():
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
-    
+    print('start training!') 
     for epoch in range(1, args.epochs + 1):
         # train for one epoch
+        start_time = time.time()
         train(train_loader, tnet, criterion, optimizer, epoch)
+        print("------- train: %s seconds ---" % (time.time()-start_time))
         # evaluate on validation set
         acc = test(test_loader, tnet, criterion, epoch)
 
@@ -161,11 +186,16 @@ def train(train_loader, tnet, criterion, optimizer, epoch):
     tnet.train()
     for batch_idx, (data1, data2, data3) in enumerate(train_loader):
         if args.cuda:
-            data1, data2, data3 = data1.cuda(), data2.cuda(), data3.cuda()
+            data1, data2, data3 = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True), data3.cuda(non_blocking=True)
         data1, data2, data3 = Variable(data1), Variable(data2), Variable(data3)
 
+        print('a/data1:', data1.is_pinned())
+        #print('a/data2:', data2.shape)
+        #print('a/data3:', data3.shape)
+        start_time = time.time()
         # compute output
         dista, distb, embedded_x, embedded_y, embedded_z = tnet(data1, data2, data3)
+        print("----- compute: %s seconds ---" % (time.time()-start_time))
         # 1 means, dista should be larger than distb
         target = torch.FloatTensor(dista.size()).fill_(1)
         if args.cuda:
@@ -194,9 +224,9 @@ def train(train_loader, tnet, criterion, optimizer, epoch):
                   'Emb_Norm: {:.2f} ({:.2f})'.format(
                 epoch, batch_idx * len(data1), len(train_loader.dataset),
                 losses.val, losses.avg, 
-                100. * accs.val, 100. * accs.avg, emb_norms.val, emb_norms.avg))
+                100. * accs.val[0], 100. * accs.avg[0], emb_norms.val, emb_norms.avg))
     # log avg values to somewhere
-    plotter.plot('acc', 'train', epoch, accs.avg)
+    plotter.plot('acc', 'train', epoch, accs.avg[0])
     plotter.plot('loss', 'train', epoch, losses.avg)
     plotter.plot('emb_norms', 'train', epoch, emb_norms.avg)
 
@@ -225,10 +255,10 @@ def test(test_loader, tnet, criterion, epoch):
         losses.update(test_loss, data1.size(0))      
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {:.2f}%\n'.format(
-        losses.avg, 100. * accs.avg))
-    plotter.plot('acc', 'test', epoch, accs.avg)
+        losses.avg, 100. * accs.avg[0]))
+    plotter.plot('acc', 'test', epoch, accs.avg[0])
     plotter.plot('loss', 'test', epoch, losses.avg)
-    return accs.avg
+    return accs.avg[0]
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     """Saves checkpoint to disk"""
@@ -276,8 +306,14 @@ class AverageMeter(object):
 
 def accuracy(dista, distb):
     margin = 0
+    is_cuda = dista.is_cuda
     pred = (dista - distb - margin).cpu().data
-    return (pred > 0).sum()*1.0/dista.size()[0]
+    acc = (1.0* int((pred > 0).sum()[0]))/ (1.0* dista.size()[0])
+    acc = torch.from_numpy(np.array([acc], np.float32))
+    if(is_cuda):
+        acc = acc.cuda()
+    return Variable(acc)
+    #return (pred > 0).sum()*1.0/dista.size()[0]
 
 if __name__ == '__main__':
     main()    
