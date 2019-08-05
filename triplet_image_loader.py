@@ -4,6 +4,7 @@ import os.path
 import pandas as pd
 import json
 import time
+import random
 
 import torch.utils.data
 import torchvision.transforms as transforms
@@ -34,6 +35,7 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         self.is_train = mode == 'train' 
         self.base_path = base_path 
         self.args = args
+
         ######################################
         self.emb_path = os.path.join(self.base_path, emb_file)
         self.emb_tensor = torch.load(self.emb_path)
@@ -91,6 +93,13 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                     pos_pairs.append([outfit_id, gid2idx[anc], gid2idx[pos]])
 
         self.pos_pairs = pos_pairs
+
+        self.shufflelist1 = list(range(len(self.indexlist)))
+        random.shuffle(self.shufflelist1)
+        self.shufflelist2 = list(range(len(self.indexlist)))
+        random.shuffle(self.shufflelist2)
+        self.memo = list(range(len(self.indexlist)))
+        self.torf = list(range(len(self.indexlist)))
         ###################################### ######################################
 
     def sample_negative(self, outfit_id, item_id, item_type):
@@ -103,18 +112,35 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             item_type: the coarse type of the item that the item
                        that was paired with the anchor
         """
-        start_time = time.time()
+        #start_time = time.time()
         item_out = item_id
         candidate_sets = self.category2ims[item_type].keys()
         attempts = 0
         while item_out == item_id and attempts < 100:
-            choice = np.random.choice(list(candidate_sets))
+            #choice = np.random.choice(list(candidate_sets))
+            if(self.torf[item_id]%2==0):
+                self.memo[item_id] += self.shufflelist1[item_id]
+            else:
+                self.memo[item_id] += (self.shufflelist1[item_id] + self.shufflelist2[item_id])
+            self.torf[item_id]+=1
+            chidx = self.memo[item_id]%len(candidate_sets)
+            choice = list(candidate_sets)[chidx]
+            """
+            t = torch.IntTensor(range(len(list(candidate_sets))))
+            perm = torch.randperm(t.size(0))
+            idx = perm[:1]
+            choice = list(candidate_sets)[idx]
+            """
             items = self.category2ims[item_type][choice]
-            item_index = np.random.choice(range(len(items)))
+            #print(items)
+            #item_index = np.random.choice(range(len(items)))
+            item_index = item_id%len(items)
             item_out = items[item_index]
+            #print(item_out)
+            #print('*'*50)
             attempts += 1
                 
-        print("--- negsample: %s seconds ---" % (time.time()-start_time))
+       # print("--- negsample: %s seconds ---" % (time.time()-start_time))
         return item_out
     
 
@@ -126,14 +152,14 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         #    img3 = self.transform(img3)
 
         if self.is_train:
-            start_time = time.time()
+            #start_time = time.time()
             outfit_id, anchor_im, pos_im = self.pos_pairs[index]
             img1= self.emb_loader(anchor_im)
             img2, item_type = self.emb_loader(pos_im, True)
             
             neg_im_id = self.sample_negative(outfit_id, pos_im, item_type)
             img3= self.emb_loader(neg_im_id)
-            print("----- getitem: %s seconds ---" % (time.time()-start_time))
+            #print("----- getitem: %s seconds ---" % (time.time()-start_time))
             return img1, img2, img3
 
         anchor = self.imnames[index]
