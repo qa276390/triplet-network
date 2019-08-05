@@ -17,6 +17,7 @@ from visdom import Visdom
 import numpy as np
 import time
 from tqdm import tqdm
+import random
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -109,7 +110,11 @@ def main():
         torch.cuda.manual_seed(args.seed)
     global plotter 
     plotter = VisdomLinePlotter(env_name=args.name)
-
+    if args.pred:
+        np.random.seed(args.seed)  # Numpy module.
+        random.seed(args.seed)  # Python random module.
+        torch.manual_seed(args.seed)
+        torch.backends.cudnn.deterministic = True
     ######################
     base_path = args.base_path
     embed_size = args.emb_size
@@ -125,11 +130,15 @@ def main():
                                 'train', m+'_embeddings.pt'),
             batch_size=args.batch_size, shuffle=True, collate_fn=collate_wrapper, **kwargs)
     print('loading testing data...')
+    if args.pred:
+        shuff = False
+    else:
+        shuff = True
     test_loader = torch.utils.data.DataLoader(
         TripletEmbedLoader(args, base_path, 'test_embed_index.csv', 
         'test.json', 'train', 'test_embeddings.pt')
         ,
-        batch_size=args.batch_size, shuffle=True, collate_fn=collate_wrapper, **kwargs)
+        batch_size=args.batch_size, shuffle=shuff, collate_fn=collate_wrapper, **kwargs)
     class Net(nn.Module):
         def __init__(self, embed_size):
             super(Net, self).__init__()
@@ -173,8 +182,9 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-    cudnn.benchmark = True
 
+    if not args.pred:
+        cudnn.benchmark = True
         
     criterion = torch.nn.MarginRankingLoss(margin = args.margin)
     optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
@@ -186,6 +196,7 @@ def main():
     if args.pred:
         print('testing...')
         acc = test(test_loader, tnet, criterion, 0)
+        #exit(1)
         print('predicting...')
         predict(test_loader, tnet)
         exit(1)
@@ -269,7 +280,9 @@ def test(test_loader, tnet, criterion, epoch):
 
     # switch to evaluation mode
     tnet.eval()
+    #print(len(test_loader.dataset))
     for batch_idx, sample in enumerate(test_loader):
+        #print('batch_idx:', batch_idx)
         data1 = sample.img1
         data2 = sample.img2
         data3 = sample.img3
@@ -336,9 +349,27 @@ def predict(test_loader, tnet):
         for test_type, test_mask in type2idxs.items():
             mask = test_mask.nonzero().view(-1)
             dist_rank = [0] * test_embed[mask].size()[0]
+
+
+            tests = test_embed[mask]
+            querys = torch.cat([query]*len(tests))
+            #print('tests shape:', tests.shape)
+            #print('querys shape:', querys.shape)
+
+            if args.cuda:
+                querys, tests = querys.cuda(non_blocking=True), tests.cuda(non_blocking=True)
+            query_variable, test_variable = Variable(querys), Variable(tests)
+            
+            start_time = time.time()
+            dists = tnet(query_variable, test_variable)
+            #print("--- tnet pred: %s seconds ---" % (time.time()-start_time))
+            #print('dists shape:', dists.shape) 
+            #start_time = time.time()
+            
             for j, test in enumerate(test_embed[mask]):
+                """
                 test = test.view(1,-1)
-                query 
+                 
                 if args.cuda:
                     query, test = query.cuda(non_blocking=True), test.cuda(non_blocking=True)
                 query_variable, test_variable = Variable(query), Variable(test)
@@ -348,9 +379,20 @@ def predict(test_loader, tnet):
                 #print(test_mask)
                 #print(mask[j])
                 #print(indexlist.iloc[int(mask[j])]['image'])
-                dist_rank[j] = (str(indexlist.iloc[int(mask[j])]['image']), dist)
-        
-            dist_rank.sort(key=lambda k: k[1][0][0])
+                """    
+                dist_rank[j] = (str(indexlist.iloc[int(mask[j])]['image']), dists[j])
+            
+            #indexlist['image'] = indexlist['image'].astype(str)
+            #dist_rank = zip(indexlist.iloc[mask]['images'], dists) 
+            
+            #start_time = time.time()
+
+            #random sample 300 to sort
+            choices = np.random.choice(len(dist_rank), size = 300)
+            dist_rank = [dist_rank[j] for j in choices]
+            #dist_rank.sort(key=lambda k: k[1][0])
+
+            #print("----sort time: %s seconds ---" % (time.time()-start_time))
             showresults(v_html=html_writer, query_folder=query_image_path, answer_folder=test_image_path,
                         query_img=query_details[i][0], img_cat=(query_type, test_type), dist=dist_rank[:10])
 
