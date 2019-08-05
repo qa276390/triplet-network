@@ -16,6 +16,7 @@ from tripletnet import Tripletnet
 from visdom import Visdom
 import numpy as np
 import time
+from tqdm import tqdm
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -49,6 +50,8 @@ parser.add_argument('--rand-cat', action='store_true', default=False,
                     help='randomly in concat order')
 parser.add_argument('--cnn', action='store_true', default=False,
                     help='using cnn model')
+parser.add_argument('--pred', action='store_true', default=False,
+                    help='prediction')
 best_acc = 0
 
 class SimpleCustomBatch:
@@ -112,13 +115,15 @@ def main():
     embed_size = args.emb_size
     ######################
     kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
-    print('loading training data...')
+   
     m = 'train'
     #m = 'test'
-    train_loader = torch.utils.data.DataLoader(
-        TripletEmbedLoader(args,base_path, m+'_embed_index.csv', 'small_train'+'.json', 
-                            'train', m+'_embeddings.pt'),
-        batch_size=args.batch_size, shuffle=True, collate_fn=collate_wrapper, **kwargs)
+    if not args.pred:
+        print('loading training data...')
+        train_loader = torch.utils.data.DataLoader(
+            TripletEmbedLoader(args,base_path, m+'_embed_index.csv', 'small_train'+'.json', 
+                                'train', m+'_embeddings.pt'),
+            batch_size=args.batch_size, shuffle=True, collate_fn=collate_wrapper, **kwargs)
     print('loading testing data...')
     test_loader = torch.utils.data.DataLoader(
         TripletEmbedLoader(args, base_path, 'test_embed_index.csv', 
@@ -153,6 +158,8 @@ def main():
     if args.cuda:
         tnet.cuda()
     print('tnet.cuda()')
+
+
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -168,6 +175,7 @@ def main():
 
     cudnn.benchmark = True
 
+        
     criterion = torch.nn.MarginRankingLoss(margin = args.margin)
     optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
     #optimizer = optim.Adam(tnet.parameters(), lr=args.lr)
@@ -175,6 +183,13 @@ def main():
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
+    if args.pred:
+        print('testing...')
+        acc = test(test_loader, tnet, criterion, 0)
+        print('predicting...')
+        predict(test_loader, tnet)
+        exit(1)
+    
     print('start training!') 
     for epoch in range(1, args.epochs + 1):
         # train for one epoch
@@ -210,9 +225,6 @@ def train(train_loader, tnet, criterion, optimizer, epoch):
             data1, data2, data3 = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True), data3.cuda(non_blocking=True)
         data1, data2, data3 = Variable(data1), Variable(data2), Variable(data3)
 
-        #print('a/data1:', data1.is_pinned())
-        #print('a/data2:', data2.shape)
-        #print('a/data3:', data3.shape)
         #start_time = time.time()
         # compute output
         dista, distb, embedded_x, embedded_y, embedded_z = tnet(data1, data2, data3)
@@ -283,6 +295,90 @@ def test(test_loader, tnet, criterion, epoch):
     #plotter.plot('acc', 'test', epoch, accs.avg[0])
     #plotter.plot('loss', 'test', epoch, losses.avg)
     return accs.avg[0]
+
+def predict(test_loader, tnet):
+    # define file name
+    query_embedding_path = os.path.join(args.base_path, 'query_embeddings.pt')
+    query_detail_path = os.path.join(args.base_path, 'query.txt')
+    html_result_path = './results/result1.html'
+    query_image_path = './data/polyvore_outfits/query_images'
+    test_image_path = './data/polyvore_outfits/images'
+
+    # switch to evaluation mode
+    tnet.eval()
+
+    indexlist = test_loader.dataset.indexlist
+    # generate type masks
+    type2idxs = {key: torch.LongTensor(len(indexlist)).zero_() for key in indexlist['type'].unique()}
+    for index, row in tqdm(indexlist.iterrows(), total=len(indexlist)):
+        type2idxs[row['type']][index] = 1
+
+    # load test embedding
+    test_embed = test_loader.dataset.emb_tensor[:,-1,:]
+
+    # load query embedding
+    query_embed = torch.load(query_embedding_path)
+    assert query_embed.size()[1] == test_embed.size()[1]
+
+    # read query details
+    with open(query_detail_path, 'r') as f:
+        lines = f.readlines()
+    query_details = []
+    for i, line in enumerate(lines):
+        img, cat = line.strip().split()
+        query_details.append((img, cat))
+
+    html_writer = open(html_result_path, 'w')
+    # for each query, search for
+    for i, query in enumerate(tqdm(query_embed)):
+        query_type = query_details[i][1]
+        query = query.view(1,-1)
+        for test_type, test_mask in type2idxs.items():
+            mask = test_mask.nonzero().view(-1)
+            dist_rank = [0] * test_embed[mask].size()[0]
+            for j, test in enumerate(test_embed[mask]):
+                test = test.view(1,-1)
+                query 
+                if args.cuda:
+                    query, test = query.cuda(non_blocking=True), test.cuda(non_blocking=True)
+                query_variable, test_variable = Variable(query), Variable(test)
+                start_time = time.time()
+                dist = tnet(query_variable, test_variable)
+                print("--- tnet prediction: %s seconds ---" % (time.time()-start_time))
+                #print(test_mask)
+                #print(mask[j])
+                #print(indexlist.iloc[int(mask[j])]['image'])
+                dist_rank[j] = (str(indexlist.iloc[int(mask[j])]['image']), dist)
+        
+            dist_rank.sort(key=lambda k: k[1][0][0])
+            showresults(v_html=html_writer, query_folder=query_image_path, answer_folder=test_image_path,
+                        query_img=query_details[i][0], img_cat=(query_type, test_type), dist=dist_rank[:10])
+
+def showresults(v_html, query_folder, answer_folder, query_img, img_cat, gt_img=None, dist=None):
+    """
+    Display results
+        
+    Inputs:
+    img1: (str) query image id
+    dist: (tuple) set_id, result image id, and distance
+    """
+
+    img_width = str(300)
+    v_html.write("<div id=\"image-table\"><table><tr>")
+    v_html.write("<td style=\"padding:5px\">")
+    v_html.write("<img src=\""+os.path.join('../', query_folder, query_img+'.jpg') + "\" width=\"{}\">".format(img_width))
+    v_html.write("<p style=\"text-align:center;font-size:30px;\">{}</p></td>".format(img_cat[0]))
+
+    if gt_img:
+        v_html.write("<img src=\""+os.path.join('../', query_folder, gt_img+'.jpg') + "\" width=\"{}\">".format(img_width))
+
+    for img2, _ in dist:
+        v_html.write("<td style=\"padding:5px\">")
+        v_html.write("<img src=\""+os.path.join('../', answer_folder, img2+'.jpg') + "\" width=\"{}\">".format(img_width))
+        v_html.write("<p style=\"text-align:center;font-size:30px;\">{}</p></td>".format(img_cat[1]))
+    v_html.write("</tr></table></div>")
+    v_html.write("<br>")
+
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     """Saves checkpoint to disk"""
