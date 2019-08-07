@@ -9,6 +9,7 @@ import random
 import torch.utils.data
 import torchvision.transforms as transforms
 import numpy as np
+import pickle
 
 def default_image_loader(path):
     return Image.open(path).convert('RGB')
@@ -46,12 +47,7 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         
         self.index_path = os.path.join(self.base_path, filenames_filename)
         self.indexlist = pd.read_csv(self.index_path)
-        #for line in open(filenames_filename):
-        #    self.filenamelist.append(line.rstrip('\n'))
         
-        self.transform = transform
-        #self.loader = loader
-        ###################################### ######################################
         im2type = {}
         category2ims = {}
         imnames = set()
@@ -61,8 +57,6 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
             outfit_id = outfit['set_id']
             for item in outfit['items']:
                 im = item['item_id']
-                #print(im)
-                #print(self.indexlist.image==im)
                 embidx =  self.indexlist[self.indexlist.image==int(im)].index.values[0]
                 category = self.indexlist[self.indexlist.image==int(im)].type.values[0]
                 im2type[embidx] = category
@@ -93,7 +87,8 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                     pos_pairs.append([outfit_id, gid2idx[anc], gid2idx[pos]])
 
         self.pos_pairs = pos_pairs
-
+        with open('pos_pair','wb') as fp:
+            pickle.dump(pos_pairs, fp)
         self.shufflelist1 = list(range(len(self.indexlist)))
         random.shuffle(self.shufflelist1)
         self.shufflelist2 = list(range(len(self.indexlist)))
@@ -110,6 +105,8 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                 neg_im_id = self.sample_negative(outfit_id, pos_index, item_type)
                 neg_pairs.append([outfit_id, anchor_index, neg_im_id])
             self.neg_pairs = neg_pairs
+            with open('neg_pair','wb') as fp:
+                pickle.dump(neg_pairs, fp)
             self.all_pairs = self.pos_pairs + self.neg_pairs
             self.labels = np.zeros(len(pos_pairs)*2)
             self.labels[len(pos_pairs):] = 1
@@ -133,20 +130,16 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         candidate_sets = self.category2ims[item_type].keys()
         attempts = 0
         while item_out == item_id and attempts < 100:
-            #choice = np.random.choice(list(candidate_sets))
-            if(self.torf[item_id]%2==0):
-                self.memo[item_id] += self.shufflelist1[item_id]
+            if(self.args.binary_classify):
+                choice = np.random.choice(list(candidate_sets))
             else:
-                self.memo[item_id] += (self.shufflelist1[item_id] + self.shufflelist2[item_id])
-            self.torf[item_id]+=1
-            chidx = self.memo[item_id]%len(candidate_sets)
-            choice = list(candidate_sets)[chidx]
-            """
-            t = torch.IntTensor(range(len(list(candidate_sets))))
-            perm = torch.randperm(t.size(0))
-            idx = perm[:1]
-            choice = list(candidate_sets)[idx]
-            """
+                if(self.torf[item_id]%2==0):
+                    self.memo[item_id] += self.shufflelist1[item_id]
+                else:
+                    self.memo[item_id] += (self.shufflelist1[item_id] + self.shufflelist2[item_id])
+                self.torf[item_id]+=1
+                chidx = self.memo[item_id]%len(candidate_sets)
+                choice = list(candidate_sets)[chidx]
             items = self.category2ims[item_type][choice]
             #print(items)
             #item_index = np.random.choice(range(len(items)))
@@ -167,8 +160,8 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
                 outfit_id, anchor_id, oth_id = self.all_pairs[index]
                 img1 = self.emb_loader(anchor_id)
                 img2 = self.emb_loader(oth_id)
-                if(args.multiply):
-                    catemb = torch.cat((img1*img2, img1+img2), dim=0)
+                if(self.args.multiply):
+                    catemb = torch.cat((img1*img2, img1+img2, (img1-img2)*(img1-img2)), dim=0)
                 else:
                     catemb = torch.cat((img1, img2), dim=0)
                 label = self.labels[index]

@@ -89,30 +89,6 @@ def collate_wrapper(batch):
 def bin_collate_wrapper(batch):
     return bin_SimpleCustomBatch(batch)
 
-class CNNNet(nn.Module):
-    def __init__(self):
-        super(CNNNet, self).__init__()
-        self.conv1 = nn.Conv1d(1, 64, kernel_size=64)
-        self.conv2 = nn.Conv1d(64, 72, kernel_size=2)
-        self.conv3 = nn.Conv1d(72, 72, kernel_size=2)
-        self.conv4 = nn.Conv1d(72, 80, kernel_size=2)
-        self.conv1_drop = nn.Dropout()
-        self.fc1 = nn.Linear(320, 120)
-        self.fc2 = nn.Linear(120, 50)
-        self.fc3 = nn.Linear(50, 1)
-
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        #x = F.relu(F.max_pool1d(self.conv2(x), 3))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        #x = F.relu(F.max_pool1d(self.conv1_drop(self.conv4(x)), 3))
-        x = F.relu(self.conv1_drop(self.conv4(x)))
-        x = x.view(-1, 320)
-        x = F.relu(self.fc1(x))
-        x = F.dropout(x, training=self.training)
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
 
 def main():
     print('pid:', os.getpid())
@@ -166,7 +142,10 @@ def main():
     class Net(nn.Module):
         def __init__(self, embed_size):
             super(Net, self).__init__()
-            self.nfc1 = nn.Linear(embed_size * 2, 480)
+            if args.binary_classify:
+                self.nfc1 = nn.Linear(embed_size * 3, 480)
+            else:
+                self.nfc1 = nn.Linear(embed_size * 2, 480)
             self.nfc2 = nn.Linear(480, 320)
             self.fc1 = nn.Linear(320, 50)
             self.fc2 = nn.Linear(50, 1)
@@ -179,9 +158,9 @@ def main():
             x = F.dropout(x, p=0.75, training=self.training)
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=0.75, training=self.training)
-            if args.binary_classify:
-                x = self.fc2(x)
-                return self.out(x)
+            #if args.binary_classify:
+                #x = self.fc2(x)
+                #return self.out(x)
             return self.fc2(x)
 
     if(args.cnn):
@@ -218,7 +197,8 @@ def main():
     if not args.pred:
         cudnn.benchmark = True
     if args.binary_classify:
-        criterion = torch.nn.BCELoss()
+        #criterion = torch.nn.BCELoss()
+        criterion = torch.nn.BCEWithLogitsLoss()
     else:
         criterion = torch.nn.MarginRankingLoss(margin = args.margin)
     #optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
@@ -282,7 +262,8 @@ def bin_train(train_loader, tnet, criterion, optimizer, epoch):
         #if args.cuda:
         #    target = target.cuda()
         #target = Variable(target)
-        
+        if(not y_pred.shape == data2.shape):
+            y_pred = torch.unsqueeze(y_pred, dim = 1)
         loss = criterion(y_pred, data2)
         #loss_embedd = embedded_x.norm(2) + embedded_y.norm(2) + embedded_z.norm(2)
         #loss = loss_triplet + 0.001 * loss_embedd
@@ -305,7 +286,6 @@ def bin_train(train_loader, tnet, criterion, optimizer, epoch):
                   'Emb_Norm: {:.2f} ({:.2f})'.format(
                 epoch, batch_idx * len(data1), len(train_loader.dataset),
                 losses.val, losses.avg, 
-                #100. * accs.val[0], 100. * accs.avg[0], emb_norms.val, emb_norms.avg))
                 100. * accs.val, 100. * accs.avg, emb_norms.val, emb_norms.avg))
     # log avg values to somewhere
     plotter.plot('acc', 'train', epoch, accs.avg.cpu())
