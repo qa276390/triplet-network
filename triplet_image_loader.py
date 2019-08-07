@@ -100,6 +100,22 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
         random.shuffle(self.shufflelist2)
         self.memo = list(range(len(self.indexlist)))
         self.torf = list(range(len(self.indexlist)))
+
+
+        if(self.args.binary_classify):
+            neg_pairs = []
+            for index in range(len(self.pos_pairs)):
+                outfit_id, anchor_index, pos_index = self.pos_pairs[index]
+                item_type = self.im2type[pos_index]
+                neg_im_id = self.sample_negative(outfit_id, pos_index, item_type)
+                neg_pairs.append([outfit_id, anchor_index, neg_im_id])
+            self.neg_pairs = neg_pairs
+            self.all_pairs = self.pos_pairs + self.neg_pairs
+            self.labels = np.zeros(len(pos_pairs)*2)
+            self.labels[len(pos_pairs):] = 1
+            self.labels = torch.from_numpy(self.labels).float()
+            print(self.labels)
+
         ###################################### ######################################
 
     def sample_negative(self, outfit_id, item_id, item_type):
@@ -146,29 +162,41 @@ class TripletEmbedLoader(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         
-        #if self.transform is not None:
-        #    img1 = self.transform(img1)
-        #    img2 = self.transform(img2)
-        #    img3 = self.transform(img3)
+        if(self.args.binary_classify):
+            if self.is_train:
+                outfit_id, anchor_id, oth_id = self.all_pairs[index]
+                img1 = self.emb_loader(anchor_id)
+                img2 = self.emb_loader(oth_id)
+                if(args.multiply):
+                    catemb = torch.cat((img1*img2, img1+img2), dim=0)
+                else:
+                    catemb = torch.cat((img1, img2), dim=0)
+                label = self.labels[index]
+                return catemb, label
+            else:
+                print('not ready')
+        else:            
+            if self.is_train:
+                #start_time = time.time()
+                outfit_id, anchor_im, pos_im = self.pos_pairs[index]
+                img1= self.emb_loader(anchor_im)
+                img2, item_type = self.emb_loader(pos_im, True)
+                
+                neg_im_id = self.sample_negative(outfit_id, pos_im, item_type)
+                img3= self.emb_loader(neg_im_id)
+                #print("----- getitem: %s seconds ---" % (time.time()-start_time))
+                return img1, img2, img3
 
-        if self.is_train:
-            #start_time = time.time()
-            outfit_id, anchor_im, pos_im = self.pos_pairs[index]
-            img1= self.emb_loader(anchor_im)
-            img2, item_type = self.emb_loader(pos_im, True)
-            
-            neg_im_id = self.sample_negative(outfit_id, pos_im, item_type)
-            img3= self.emb_loader(neg_im_id)
-            #print("----- getitem: %s seconds ---" % (time.time()-start_time))
-            return img1, img2, img3
-
-        anchor = self.imnames[index]
-        img1, anchor_type = self.emb_loader(anchor)
-            
-        return img1
+            anchor = self.imnames[index]
+            img1, anchor_type = self.emb_loader(anchor)
+                
+            return img1
 
     def __len__(self):
+
         if self.is_train:
+            if(self.args.binary_classify):
+                return len(self.all_pairs)
             return len(self.pos_pairs)
         return len(self.imnames)
 

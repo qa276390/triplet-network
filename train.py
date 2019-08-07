@@ -53,6 +53,10 @@ parser.add_argument('--cnn', action='store_true', default=False,
                     help='using cnn model')
 parser.add_argument('--pred', action='store_true', default=False,
                     help='prediction')
+parser.add_argument('--binary-classify', action='store_true', default=False,
+                    help='only positive sample')
+parser.add_argument('--multiply', action='store_true', default=False,
+                    help='element-wise multiply')
 best_acc = 0
 
 class SimpleCustomBatch:
@@ -68,8 +72,22 @@ class SimpleCustomBatch:
         self.img3 = self.img3.pin_memory()
         return self
 
+class bin_SimpleCustomBatch:
+    def __init__(self, data):
+        transposed_data = list(zip(*data))
+        self.catemb = torch.stack(transposed_data[0], 0)
+        self.label = torch.stack(transposed_data[1], 0)
+
+    def pin_memory(self):
+        self.catemb = self.catemb.pin_memory()
+        self.label = self.label.pin_memory()
+        return self
+
 def collate_wrapper(batch):
     return SimpleCustomBatch(batch)
+
+def bin_collate_wrapper(batch):
+    return bin_SimpleCustomBatch(batch)
 
 class CNNNet(nn.Module):
     def __init__(self):
@@ -123,12 +141,18 @@ def main():
    
     m = 'train'
     #m = 'test'
+    #trainortest = 'test'
+    trainortest = 'small_train'
+    if args.binary_classify:
+        coll = bin_collate_wrapper
+    else:
+        coll = collate_wrapper
     if not args.pred:
         print('loading training data...')
         train_loader = torch.utils.data.DataLoader(
-            TripletEmbedLoader(args,base_path, m+'_embed_index.csv', 'small_train'+'.json', 
+            TripletEmbedLoader(args,base_path, m+'_embed_index.csv', trainortest +'.json', 
                                 'train', m+'_embeddings.pt'),
-            batch_size=args.batch_size, shuffle=True, collate_fn=collate_wrapper, **kwargs)
+            batch_size=args.batch_size, shuffle=True, collate_fn=coll, **kwargs)
     print('loading testing data...')
     if args.pred:
         shuff = False
@@ -138,7 +162,7 @@ def main():
         TripletEmbedLoader(args, base_path, 'test_embed_index.csv', 
         'test.json', 'train', 'test_embeddings.pt')
         ,
-        batch_size=args.batch_size, shuffle=shuff, collate_fn=collate_wrapper, **kwargs)
+        batch_size=args.batch_size, shuffle=shuff, collate_fn=coll, **kwargs)
     class Net(nn.Module):
         def __init__(self, embed_size):
             super(Net, self).__init__()
@@ -146,13 +170,18 @@ def main():
             self.nfc2 = nn.Linear(480, 320)
             self.fc1 = nn.Linear(320, 50)
             self.fc2 = nn.Linear(50, 1)
-
+            if args.binary_classify:
+                self.out = nn.Sigmoid()
         def forward(self, x):
             x = F.relu(self.nfc1(x))
+            x = F.dropout(x, p=0.5, training=self.training)
             x = F.relu(self.nfc2(x))
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=0.75, training=self.training)
             x = F.relu(self.fc1(x))
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=0.75, training=self.training)
+            if args.binary_classify:
+                x = self.fc2(x)
+                return self.out(x)
             return self.fc2(x)
 
     if(args.cnn):
@@ -162,7 +191,10 @@ def main():
     #model = CNNNet()
     if(args.cuda):
         model.cuda()
-    tnet = Tripletnet(model, args)
+    if(args.binary_classify):
+        tnet = model
+    else:
+        tnet = Tripletnet(model, args)
     print('net built.')
     if args.cuda:
         tnet.cuda()
@@ -185,10 +217,12 @@ def main():
 
     if not args.pred:
         cudnn.benchmark = True
-        
-    criterion = torch.nn.MarginRankingLoss(margin = args.margin)
-    optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
-    #optimizer = optim.Adam(tnet.parameters(), lr=args.lr)
+    if args.binary_classify:
+        criterion = torch.nn.BCELoss()
+    else:
+        criterion = torch.nn.MarginRankingLoss(margin = args.margin)
+    #optimizer = optim.SGD(tnet.parameters(), lr=args.lr, momentum=args.momentum)
+    optimizer = optim.Adam(tnet.parameters(), lr=args.lr)
 
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
@@ -205,10 +239,14 @@ def main():
     for epoch in range(1, args.epochs + 1):
         # train for one epoch
         #start_time = time.time()
-        train(train_loader, tnet, criterion, optimizer, epoch)
+        if args.binary_classify:
+            bin_train(train_loader, tnet, criterion, optimizer, epoch)
+            acc = bin_test(test_loader, tnet, criterion, epoch)
+        else:
+            train(train_loader, tnet, criterion, optimizer, epoch)
+            acc = test(test_loader, tnet, criterion, epoch)
         #print("------- train: %s seconds ---" % (time.time()-start_time))
         # evaluate on validation set
-        acc = test(test_loader, tnet, criterion, epoch)
 
         # remember best acc and save checkpoint
         is_best = acc > best_acc
@@ -218,6 +256,62 @@ def main():
             'state_dict': tnet.state_dict(),
             'best_prec1': best_acc,
         }, is_best)
+
+def bin_train(train_loader, tnet, criterion, optimizer, epoch):
+    losses = AverageMeter()
+    accs = AverageMeter()
+    emb_norms = AverageMeter()
+
+    # switch to train mode
+    tnet.train()
+    for batch_idx, sample in enumerate(train_loader):
+    #for batch_idx, (data1, data2, data3) in enumerate(train_loader):
+        #print('img1 is_pinned:', sample.img1.is_pinned())
+        data1 = sample.catemb
+        data2 = sample.label
+        if args.cuda:
+            data1, data2 = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True)
+        data1, data2 = Variable(data1), Variable(data2)
+
+        #start_time = time.time()
+        # compute output
+        y_pred = tnet(data1)
+        #print("----- compute: %s seconds ---" % (time.time()-start_time))
+        # 1 means, dista should be larger than distb
+        #target = torch.FloatTensor(dista.size()).fill_(1)
+        #if args.cuda:
+        #    target = target.cuda()
+        #target = Variable(target)
+        
+        loss = criterion(y_pred, data2)
+        #loss_embedd = embedded_x.norm(2) + embedded_y.norm(2) + embedded_z.norm(2)
+        #loss = loss_triplet + 0.001 * loss_embedd
+
+        # measure accuracy and record loss
+        acc = bin_acc(y_pred, data2)
+        losses.update(loss.data, data1.size(0))
+        accs.update(acc, data1.size(0))
+        #emb_norms.update(loss_embedd.data/3, data1.size(0))
+
+        # compute gradient and do optimizer step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if batch_idx % args.log_interval == 0:
+            print('Train Epoch: {} [{}/{}]\t'
+                  'Loss: {:.4f} ({:.4f}) \t'
+                  'Acc: {:.2f}% ({:.2f}%) \t'
+                  'Emb_Norm: {:.2f} ({:.2f})'.format(
+                epoch, batch_idx * len(data1), len(train_loader.dataset),
+                losses.val, losses.avg, 
+                #100. * accs.val[0], 100. * accs.avg[0], emb_norms.val, emb_norms.avg))
+                100. * accs.val, 100. * accs.avg, emb_norms.val, emb_norms.avg))
+    # log avg values to somewhere
+    plotter.plot('acc', 'train', epoch, accs.avg.cpu())
+    plotter.plot('loss', 'train', epoch, losses.avg.cpu())
+    #plotter.plot('emb_norms', 'train', epoch, emb_norms.avg.cpu())
+
 
 def train(train_loader, tnet, criterion, optimizer, epoch):
     losses = AverageMeter()
@@ -270,10 +364,50 @@ def train(train_loader, tnet, criterion, optimizer, epoch):
                 losses.val, losses.avg, 
                 100. * accs.val[0], 100. * accs.avg[0], emb_norms.val, emb_norms.avg))
     # log avg values to somewhere
-    #plotter.plot('acc', 'train', epoch, accs.avg[0])
-    #plotter.plot('loss', 'train', epoch, losses.avg)
-    #plotter.plot('emb_norms', 'train', epoch, emb_norms.avg)
+    plotter.plot('acc', 'train', epoch, accs.avg.cpu())
+    plotter.plot('loss', 'train', epoch, losses.avg.cpu())
+    plotter.plot('emb_norms', 'train', epoch, emb_norms.avg.cpu())
 
+def bin_test(test_loader, tnet, criterion, epoch):
+    losses = AverageMeter()
+    accs = AverageMeter()
+
+    # switch to evaluation mode
+    tnet.eval()
+    #print(len(test_loader.dataset))
+    for batch_idx, sample in enumerate(test_loader):
+        #print('batch_idx:', batch_idx)
+        data1 = sample.catemb
+        data2 = sample.label
+        if args.cuda:
+            data1, data2 = data1.cuda(non_blocking=True), data2.cuda(non_blocking=True)
+        data1, data2 = Variable(data1), Variable(data2)
+
+        #start_time = time.time()
+        # compute output
+        y_pred = tnet(data1)
+        
+        #target = torch.FloatTensor(dista.size()).fill_(1)
+        #if args.cuda:
+        #    target = target.cuda()
+        #target = Variable(target)
+        test_loss = criterion(y_pred, data2).data
+        #loss_embedd = embedded_x.norm(2) + embedded_y.norm(2) + embedded_z.norm(2)
+        #loss = loss_triplet + 0.001 * loss_embedd
+
+        # measure accuracy and record loss
+        acc = bin_acc(y_pred, data2)
+        losses.update(test_loss.data, data1.size(0))
+        accs.update(acc, data1.size(0))
+
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {:.2f}%\n'.format(
+        #losses.avg, 100. * accs.avg[0]))
+        losses.avg, 100. * accs.avg))
+    #plotter.plot('acc', 'test', epoch, accs.avg[0].cpu())
+    plotter.plot('acc', 'test', epoch, accs.avg.cpu())
+    plotter.plot('loss', 'test', epoch, losses.avg.cpu())
+    #return accs.avg[0]
+    return accs.avg
 def test(test_loader, tnet, criterion, epoch):
     losses = AverageMeter()
     accs = AverageMeter()
@@ -305,8 +439,8 @@ def test(test_loader, tnet, criterion, epoch):
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {:.2f}%\n'.format(
         losses.avg, 100. * accs.avg[0]))
-    #plotter.plot('acc', 'test', epoch, accs.avg[0])
-    #plotter.plot('loss', 'test', epoch, losses.avg)
+    plotter.plot('acc', 'test', epoch, accs.avg[0].cpu())
+    plotter.plot('loss', 'test', epoch, losses.avg.cpu())
     return accs.avg[0]
 
 def predict(test_loader, tnet):
@@ -364,6 +498,8 @@ def predict(test_loader, tnet):
             dists = tnet(query_variable, test_variable)
             #print("--- tnet pred: %s seconds ---" % (time.time()-start_time))
             #print('dists shape:', dists.shape) 
+            print('dists:')
+            print(dists)
             #start_time = time.time()
             
             for j, test in enumerate(test_embed[mask]):
@@ -390,7 +526,7 @@ def predict(test_loader, tnet):
             #random sample 300 to sort
             choices = np.random.choice(len(dist_rank), size = 300)
             dist_rank = [dist_rank[j] for j in choices]
-            #dist_rank.sort(key=lambda k: k[1][0])
+            dist_rank.sort(key=lambda k: k[1][0])
 
             #print("----sort time: %s seconds ---" % (time.time()-start_time))
             showresults(v_html=html_writer, query_folder=query_image_path, answer_folder=test_image_path,
@@ -440,14 +576,15 @@ class VisdomLinePlotter(object):
         self.plots = {}
     def plot(self, var_name, split_name, x, y):
         if var_name not in self.plots:
-            self.plots[var_name] = self.viz.line(X=np.array(torch.stack([x,x])), Y=np.array(torch.stack([y,y])), env=self.env, opts=dict(
-                legend=[split_name],
+            self.plots[var_name] = self.viz.line(X=np.column_stack((x,x)), Y=np.column_stack((y,y)), env=self.env, opts=dict            (
+                #legend=[split_name],
                 title=var_name,
                 xlabel='Epochs',
                 ylabel=var_name
             ))
         else:
             self.viz.line(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name, update='append')
+            #self.viz.line(X=np.column_stack(x), Y=np.column_stack(y), env=self.env, win=self.plots[var_name], name=split_name, update='append')
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -476,6 +613,17 @@ def accuracy(dista, distb):
         acc = acc.cuda()
     return Variable(acc)
     #return (pred > 0).sum()*1.0/dista.size()[0]
-
+def bin_acc(output, target):
+    is_cuda = target.is_cuda
+    pred = output >= 0.5
+    truth = target >= 0.5
+    tp = pred.mul(truth).sum(0).float()
+    tn = (1 - pred).mul(1 - truth).sum(0).float()
+    fp = pred.mul(1 - truth).sum(0).float()
+    fn = (1 - pred).mul(truth).sum(0).float()
+    acc = (tp + tn).sum() / (tp + tn + fp + fn).sum()
+    if(is_cuda):
+        acc = acc.cuda()
+    return Variable(acc)
 if __name__ == '__main__':
     main()    
