@@ -34,7 +34,7 @@ torchvision==0.1.6
 tornado==6.0.3
 tqdm==4.32.2
 typing==3.7.4
-urllib3==1.25.3
+urllib3==1.26.5
 -e git+https://github.com/facebookresearch/visdom.git@ddf7cd2cc522635f8a86b243d0f26f13980d9b89#egg=visdom
 visdom-helper==0.0.1
 waterbear==2.6.3
